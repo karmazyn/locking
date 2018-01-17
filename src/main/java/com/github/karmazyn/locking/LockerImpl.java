@@ -11,26 +11,46 @@ public class LockerImpl implements Locker {
     @Override
     public Mutex lock(Object object) {
         MutexImpl mutex = Optional.ofNullable(object)
-                .map(o -> locks.computeIfAbsent(o, (key) -> new MutexImpl()))
+                .map(o -> locks.computeIfAbsent(o, (key) -> new MutexImpl(key)))
                 .orElseThrow(() -> new IllegalArgumentException());
         mutex.lockInternal();
         return mutex;
     }
 
-    private static class MutexImpl implements Mutex {
+    private class MutexImpl implements Mutex {
 
+        private final Object key;
         private final ReentrantLock internalLock;
+        private volatile boolean isRemoved = false;
 
-        public MutexImpl() {
+        MutexImpl(Object key) {
             this.internalLock = new ReentrantLock();
+            this.key = key;
         }
 
         private void lockInternal() {
             internalLock.lock();
+            if (isRemoved) {
+                releaseInternal();
+                LockerImpl.this.lock(key);
+            }
         }
 
         @Override
         public void release() {
+            if (internalLock.getQueueLength() == 0) {
+                isRemoved = true;
+            }
+
+            releaseInternal();
+
+            if (isRemoved) {
+                LockerImpl.this.locks.remove(key, this);
+            }
+        }
+
+
+        private void releaseInternal() {
             internalLock.unlock();
         }
     }
