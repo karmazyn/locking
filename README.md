@@ -4,7 +4,7 @@ Use gradle wrapper distributed in repo. For more verbose output use `--info`
     ./gradlew build
 
 # Performance test
-There is a very minimal performance test in the LockerImplTest. The test starts 200 concurrent threads that perform operations on the same lock. There is no assertions. The purpose is to see the execution time. The test is excluded from normal build. The was run from IDE.
+There is a very minimal performance test in the LockerImplTest. The test starts 200 concurrent threads that perform operations on the same lock. There are no assertions. The purpose is to see the execution time. The test is excluded from normal build. Test was run from IDE.
 ## Locker version
 execution time 1s 900ms
 ```
