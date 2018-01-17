@@ -21,6 +21,7 @@ public class LockerImpl implements Locker {
             mutex = locks.computeIfAbsent(object, (key) -> new MutexImpl(key));
             locked = mutex.lockInternal();
         }
+
         return mutex;
     }
 

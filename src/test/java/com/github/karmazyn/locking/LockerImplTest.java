@@ -3,7 +3,9 @@ package com.github.karmazyn.locking;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -268,6 +270,45 @@ public class LockerImplTest {
 
     }
 
+    @Category(PerformanceTest.class)
+    @Test
+    public void shouldHandle200Threads() throws InterruptedException {
+        //given
+        CountDownLatch beforeLock = new CountDownLatch(1);
+        CountDownLatch finished = new CountDownLatch(200);
+        AtomicInteger verifier = new AtomicInteger(0);
+        String uuid = UUID.randomUUID().toString();
+        ExecutorService executorService = Executors.newCachedThreadPool();
+
+        Runnable testRunnable = () -> {
+            Mutex lock = null;
+            try {
+                beforeLock.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
+                lock = locker.lock(uuid);
+                long accumulator = 0;
+                for (int i = 0; i < 100000; i++) {
+                    accumulator += Math.sin(i);
+                }
+                verifier.addAndGet((int) (accumulator * 0 + 1));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                lock.release();
+                finished.countDown();
+            }
+        };
+
+        //when
+        for (int i = 0; i < 200; i++) {
+            executorService.execute(testRunnable);
+        }
+        beforeLock.countDown();
+
+        //then
+        finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
+        assertThat(verifier).hasValue(200);
+        assertLockReleased(uuid);
+    }
 
     private void assertLockReleased(Object testObject) throws InterruptedException {
         AtomicBoolean verified = new AtomicBoolean(false);
