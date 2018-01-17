@@ -4,10 +4,11 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,17 +33,6 @@ public class LockerImplTest {
         executor.shutdownNow();
     }
 
-    @Test
-    public void shouldIdentifyEqualObjects() {
-        //given
-        TestObject testSubject = new TestObject("test");
-        //when&then
-        assertThat(testSubject.equals(null)).isFalse();
-        assertThat(testSubject.equals(testSubject)).isTrue();
-        assertThat(testSubject.equals(new TestObject("test"))).isTrue();
-        assertThat(testSubject.equals(new TestObject("other"))).isFalse();
-    }
-
     @Test(expected = IllegalArgumentException.class)
     public void shouldThrowIAEWhenNullObject() {
         //when
@@ -54,10 +44,11 @@ public class LockerImplTest {
         //given
         CountDownLatch finished = new CountDownLatch(1);
         AtomicBoolean verifier = new AtomicBoolean(false);
+        String testObject = new String("test");
 
         //when
         executor.execute(() -> {
-            Mutex lock = locker.lock(new TestObject("test"));
+            Mutex lock = locker.lock(testObject);
             try {
                 verifier.set(true);
             } finally {
@@ -69,7 +60,7 @@ public class LockerImplTest {
         //then
         finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
         assertThat(verifier).isTrue();
-        assertLockReleased(new TestObject("test"));
+        assertLockReleased(testObject);
     }
 
     @Test
@@ -80,9 +71,9 @@ public class LockerImplTest {
 
         //when
         executor.execute(() -> {
-            Mutex firstLock = locker.lock(new TestObject("test"));
+            Mutex firstLock = locker.lock(new String("test"));
             try {
-                Mutex secondLock = locker.lock(new TestObject("test"));
+                Mutex secondLock = locker.lock(new String("test"));
                 try {
                     verifier.set(true);
                 } finally {
@@ -97,11 +88,7 @@ public class LockerImplTest {
         //then
         finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
         assertThat(verifier).isTrue();
-
-
-        //assert lock released
-        assertLockReleased(new TestObject("test"));
-
+        assertLockReleased(new String("test"));
     }
 
     @Test
@@ -117,7 +104,7 @@ public class LockerImplTest {
             Mutex lock = null;
             try {
                 beforeLock.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
-                lock = locker.lock(new TestObject("test"));
+                lock = locker.lock(new String("test"));
 
                 verifier.incrementAndGet();
                 afterIncrement.countDown();
@@ -125,8 +112,7 @@ public class LockerImplTest {
                 beforeRelease.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
 
             } catch (InterruptedException e) {
-                e.printStackTrace();
-                fail("timed out in runnable");
+                Thread.currentThread().interrupt();
             } finally {
                 if (lock != null) {
                     lock.release();
@@ -147,7 +133,7 @@ public class LockerImplTest {
         beforeRelease.countDown();
         finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
         assertThat(verifier).hasValue(2);
-        assertLockReleased(new TestObject("test"));
+        assertLockReleased(new String("test"));
     }
 
     @Test
@@ -160,26 +146,26 @@ public class LockerImplTest {
 
         //when
         executor.execute(() -> {
-            Mutex lock = locker.lock(new TestObject("first"));
+            Mutex lock = locker.lock(new String("first"));
             try {
                 verifier.incrementAndGet();
                 afterIncrement.countDown();
                 beforeRelease.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
-                fail("timed out");
+                Thread.currentThread().interrupt();
             } finally {
                 lock.release();
                 finished.countDown();
             }
         });
         executor.execute(() -> {
-            Mutex lock = locker.lock(new TestObject("second"));
+            Mutex lock = locker.lock(new String("second"));
             try {
                 verifier.incrementAndGet();
                 afterIncrement.countDown();
                 beforeRelease.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
-                fail("timed out");
+                Thread.currentThread().interrupt();
             } finally {
                 lock.release();
                 finished.countDown();
@@ -191,49 +177,114 @@ public class LockerImplTest {
         assertThat(verifier).hasValue(2);
         beforeRelease.countDown();
         finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
-        assertLockReleased(new TestObject("first"));
-        assertLockReleased(new TestObject("second"));
+        assertLockReleased(new String("first"));
+        assertLockReleased(new String("second"));
+    }
+
+    @Test
+    public void shouldFailWhenTryingToReleaseSecondTime() throws InterruptedException {
+        //given
+        CountDownLatch finished = new CountDownLatch(1);
+        AtomicBoolean verifier = new AtomicBoolean(false);
+
+        //when
+        Future<?> callable = executor.submit(() -> {
+            try {
+                Mutex lock = locker.lock(new String("test"));
+                lock.release();
+                verifier.set(true);
+                lock.release();
+            } finally {
+                finished.countDown();
+            }
+        });
+
+        //then
+        finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
+        assertThat(verifier).isTrue();
+        try {
+            callable.get();
+            fail("Expected exception not thrown");
+        } catch (ExecutionException ex) {
+            assertThat(ex.getCause()).isInstanceOf(IllegalMonitorStateException.class);
+        }
+    }
+
+    @Test
+    public void shouldThrowExceptionWhenTryingToReleaseNotOwnedLock() throws InterruptedException {
+        //given
+        CountDownLatch beforeLock = new CountDownLatch(1);
+        CountDownLatch afterLock = new CountDownLatch(1);
+        CountDownLatch finished = new CountDownLatch(2);
+        AtomicBoolean verifier = new AtomicBoolean(false);
+
+        //when
+        executor.execute(() -> {
+            Mutex lock = null;
+            try {
+                beforeLock.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
+                lock = locker.lock(new String("test"));
+                afterLock.countDown();
+                verifier.set(true);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                if (lock != null) {
+                    lock.release();
+                }
+                finished.countDown();
+            }
+        });
+
+        Future<?> second = executor.submit(() -> {
+            //lock & release just to have a reference to lock
+            Mutex lock = locker.lock(new String("test"));
+            try {
+                beforeLock.countDown();
+            } finally {
+                lock.release();
+            }
+
+            try {
+                afterLock.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
+                lock.release();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                finished.countDown();
+            }
+        });
+
+        //then
+        finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
+        assertThat(verifier).isTrue();
+        try {
+            second.get();
+            fail("Expected exception not thrown");
+        } catch (ExecutionException ex) {
+            assertThat(ex.getCause()).isInstanceOf(IllegalMonitorStateException.class);
+        }
+        assertLockReleased(new String("first"));
 
     }
 
-    private void assertLockReleased(TestObject testObject) throws InterruptedException {
-        AtomicBoolean verifiedLocked = new AtomicBoolean(false);
-        CountDownLatch finishedRelease = new CountDownLatch(1);
+
+    private void assertLockReleased(Object testObject) throws InterruptedException {
+        AtomicBoolean verified = new AtomicBoolean(false);
+        CountDownLatch finished = new CountDownLatch(1);
         executor.execute(() -> {
             Mutex lock = locker.lock(testObject);
             try {
-                verifiedLocked.set(true);
+                verified.set(true);
             } finally {
                 lock.release();
-                finishedRelease.countDown();
+                finished.countDown();
             }
 
         });
 
-        finishedRelease.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
-        assertThat(verifiedLocked).isTrue();
-    }
-
-    class TestObject {
-
-        private final String value;
-
-        TestObject(String value) {
-            this.value = value;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(value);
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            if (obj == null || !(obj instanceof TestObject)) {
-                return false;
-            }
-            return Objects.equals(value, ((TestObject) obj).value);
-        }
+        finished.await(AWAIT_TIMEOUT_IN_SECONDS, TimeUnit.SECONDS);
+        assertThat(verified).isTrue();
     }
 
 }
