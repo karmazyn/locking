@@ -1,6 +1,5 @@
 package com.github.karmazyn.locking;
 
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -10,11 +9,23 @@ public class LockerImpl implements Locker {
 
     @Override
     public Mutex lock(Object object) {
-        MutexImpl mutex = Optional.ofNullable(object)
-                .map(o -> locks.computeIfAbsent(o, (key) -> new MutexImpl(key)))
-                .orElseThrow(() -> new IllegalArgumentException());
-        mutex.lockInternal();
+
+        if (object == null) {
+            throw new IllegalArgumentException();
+        }
+
+        boolean locked = false;
+        MutexImpl mutex = null;
+
+        while (!locked) {
+            mutex = locks.computeIfAbsent(object, (key) -> new MutexImpl(key));
+            locked = mutex.lockInternal();
+        }
         return mutex;
+    }
+
+    private boolean remove(Object key, Object expected) {
+        return locks.remove(key, expected);
     }
 
     private class MutexImpl implements Mutex {
@@ -28,30 +39,26 @@ public class LockerImpl implements Locker {
             this.key = key;
         }
 
-        private void lockInternal() {
+        private boolean lockInternal() {
             internalLock.lock();
             if (isRemoved) {
-                releaseInternal();
-                LockerImpl.this.lock(key);
+                internalLock.unlock();
+                return false;
             }
+            return true;
         }
 
         @Override
         public void release() {
-            if (internalLock.getQueueLength() == 0) {
-                isRemoved = true;
-            }
-
-            releaseInternal();
-
-            if (isRemoved) {
-                LockerImpl.this.locks.remove(key, this);
+            try {
+                if (internalLock.getQueueLength() == 0) {
+                    isRemoved = true;
+                    LockerImpl.this.remove(key, this);
+                }
+            } finally {
+                internalLock.unlock();
             }
         }
 
-
-        private void releaseInternal() {
-            internalLock.unlock();
-        }
     }
 }
